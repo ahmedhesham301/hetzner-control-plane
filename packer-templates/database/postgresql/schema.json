@@ -1,5 +1,5 @@
 {
-    "app_name": "postgresql",
+    "engine": "postgresql",
     "vars": {
         "app_version": [
             "10",

@@ -65,3 +65,10 @@ same steps in [Installation on Hetzner](#Installation on Hetzner) but replace th
 >[!WARNING]
 > Exposure to the public Internet risk.
 > This gives all Services a public IP and allows all incoming traffic.
+
+
+## Feature plans
+- object storage using s3
+- managed kubernetes 
+- adding more services (mysql, mongodb, redis)
+- automated backups, restore, PITR, upgrades, resize/scale, credentials rotation, health checks, failover, read replicas, HA PostgreSQL with Patroni

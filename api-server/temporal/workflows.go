@@ -1,15 +1,14 @@
 package temporal
 
 import (
+	"encoding/json"
 	"time"
-
-	"github.com/ahmedhesham301/hetzner-control-plane/api-server/data"
 
 	"go.temporal.io/sdk/workflow"
 )
 
 type CreateServiceWorkflowParams struct {
-	ServiceParams data.CreateServiceParams
+	RawService    json.RawMessage
 	Env           string
 	TemplatesPath string
 	NetworkID     int64
@@ -25,7 +24,7 @@ func CreateServiceWorkflow(ctx workflow.Context, params CreateServiceWorkflowPar
 
 	// Check if image exists
 	var imageID *int64
-	err := workflow.ExecuteActivity(ctx, checkImageExist, params.ServiceParams).Get(ctx, &imageID)
+	err := workflow.ExecuteActivity(ctx, checkImageExist, params.RawService).Get(ctx, &imageID)
 	if err != nil {
 		logger.Error("error checking if image exists", "err", err)
 		return err
@@ -33,7 +32,7 @@ func CreateServiceWorkflow(ctx workflow.Context, params CreateServiceWorkflowPar
 	// If not build it
 	if imageID == nil {
 		imageParams := buildImageParams{
-			ServiceParams: params.ServiceParams,
+			ServiceJSON:   params.RawService,
 			Env:           params.Env,
 			TemplatesPath: params.TemplatesPath,
 			NetworkID:     params.NetworkID,
@@ -56,7 +55,7 @@ func CreateServiceWorkflow(ctx workflow.Context, params CreateServiceWorkflowPar
 
 	// Deploy it
 	deployParams := deployServiceParams{
-		ServiceParams:      params.ServiceParams,
+		ServiceJSON:        params.RawService,
 		ImageID:            *imageID,
 		Env:                params.Env,
 		AllowAllFirewallID: allowAllFirewallID,

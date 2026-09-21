@@ -1,32 +1,33 @@
 package middlewares
 
 import (
-	"log/slog"
+	"encoding/json"
 	"net/http"
 
 	"github.com/ahmedhesham301/hetzner-control-plane/api-server/data"
-
 	"github.com/gin-gonic/gin"
 )
 
 func ValidateParams() gin.HandlerFunc {
 	return func(g *gin.Context) {
-		var params data.CreateServiceParams
-		if err := g.ShouldBindJSON(&params); err != nil {
-			slog.Error("Failed to bind body to createServiceParams struct ")
-			g.AbortWithStatusJSON(http.StatusBadRequest, err.Error())
+		var body json.RawMessage
+		if err := g.ShouldBindJSON(&body); err != nil {
+			g.AbortWithStatusJSON(http.StatusBadRequest, gin.H{
+				"error": err.Error(),
+			})
 			return
 		}
 
-		err := params.Validate()
+		params, err := data.ParseService(body)
 		if err != nil {
-			slog.Error("error", "validation failed", err.Error())
-			g.AbortWithStatusJSON(http.StatusBadRequest, err.Error())
+			g.AbortWithStatusJSON(http.StatusBadRequest, gin.H{
+				"error": err.Error(),
+			})
 			return
 		}
-		g.Set("params", params)
 
-		// Pre-handler phase
+		g.Set("params", params)
+		g.Set("rawService", body)
 		g.Next()
 	}
 }

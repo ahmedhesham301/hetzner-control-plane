@@ -6,7 +6,11 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/ahmedhesham301/hetzner-control-plane/api-server/utils"
 	"github.com/ahmedhesham301/hetzner-control-plane/modules/database"
+	"github.com/ahmedhesham301/hetzner-control-plane/modules/hetzner"
+	"github.com/ahmedhesham301/hetzner-control-plane/modules/random"
+	"github.com/ahmedhesham301/hetzner-control-plane/modules/services"
 	"github.com/hetznercloud/hcloud-go/v2/hcloud"
 )
 
@@ -33,7 +37,7 @@ type NetworkConfig struct {
 	PrivateNetwork bool `json:"private_network"`
 }
 
-type CreateServiceParams struct {
+type postgresql struct {
 	ServiceType string   `json:"type"`
 	Engine      string   `json:"engine"`
 	Version     string   `json:"version"`
@@ -52,7 +56,54 @@ type CreateServiceParams struct {
 	RecordID *int
 }
 
-func (p *CreateServiceParams) Validate() error {
+// Provision implements [Service].
+func (p *postgresql) Provision(ctx context.Context, imageID int64, env string, allowAllFirewallID *int64, networkID int64) (error, *hcloud.Server) {
+	serverOpts := hcloud.ServerCreateOpts{
+		Name:       random.AddRandomLetters("postgresql" + "-" + p.Version),
+		ServerType: &hcloud.ServerType{Name: p.ServerType},
+		Image:      &hcloud.Image{ID: imageID},
+		Location:   &hcloud.Location{Name: p.Location},
+		PublicNet: &hcloud.ServerCreatePublicNet{
+			EnableIPv4: p.Network.PublicIPv4,
+			EnableIPv6: p.Network.PublicIPv6,
+		},
+		Labels: services.AppendManagedLabel(GetConfigMapString(p)),
+	}
+
+	var firewalls []*hcloud.ServerCreateFirewall
+	if p.FirewallIDs != nil {
+		for _, id := range *p.FirewallIDs {
+			firewalls = append(firewalls, &hcloud.ServerCreateFirewall{
+				Firewall: hcloud.Firewall{
+					ID: id,
+				},
+			})
+		}
+	}
+
+	if env == "dev" {
+		serverOpts.PublicNet.EnableIPv4 = true
+		serverOpts.PublicNet.EnableIPv6 = true
+		firewalls = append(firewalls, &hcloud.ServerCreateFirewall{
+			Firewall: hcloud.Firewall{
+				ID: *allowAllFirewallID,
+			},
+		})
+	}
+	serverOpts.Firewalls = firewalls
+	if p.Network.PrivateNetwork {
+		serverOpts.Networks = []*hcloud.Network{
+			{
+
+				ID: networkID,
+			},
+		}
+	}
+	createResult, _, err := hetzner.HClient.Server.Create(ctx, serverOpts)
+	return err, createResult.Server
+}
+
+func (p *postgresql) Validate() error {
 	// handle if type does not exist
 	_, ok := templates[p.ServiceType]
 	if !ok {
@@ -73,7 +124,7 @@ func (p *CreateServiceParams) Validate() error {
 	return nil
 }
 
-func (p *CreateServiceParams) SaveToDB(ctx context.Context, server hcloud.Server) error {
+func (p *postgresql) SaveToDB(ctx context.Context, server hcloud.Server) error {
 	env := os.Getenv("ENV")
 
 	var ip string
@@ -92,7 +143,7 @@ func (p *CreateServiceParams) SaveToDB(ctx context.Context, server hcloud.Server
 	return err
 }
 
-func (p *CreateServiceParams) CreateRecord(ctx context.Context) error {
+func (p *postgresql) CreateRecord(ctx context.Context) (error, *int) {
 	query := `INSERT INTO services (type, engine)
 	VALUES ($1, $2)
 	RETURNING id;`
@@ -102,10 +153,10 @@ func (p *CreateServiceParams) CreateRecord(ctx context.Context) error {
 		p.Engine,
 	)
 	err := row.Scan(&p.RecordID)
-	return err
+	return err, p.RecordID
 }
 
-func (p *CreateServiceParams) GetConfigMap() map[string]any {
+func (p *postgresql) GetConfigMap() map[string]any {
 	return map[string]any{
 		"type":             p.ServiceType,
 		"engine":           p.Engine,
@@ -115,10 +166,12 @@ func (p *CreateServiceParams) GetConfigMap() map[string]any {
 	}
 }
 
-func (p *CreateServiceParams) GetConfigMapString() map[string]string {
-	result := make(map[string]string)
-	for k, v := range p.GetConfigMap() {
-		result[k] = fmt.Sprintf("%v", v)
+func (p *postgresql) GetPackerBuildArgs(templatesPath string, env string, networkID int64) []string {
+	return []string{
+		"build", "-machine-readable",
+		"-var", fmt.Sprintf("config=%v", utils.ConvertMapToJsonString(p.GetConfigMap())),
+		"-var", fmt.Sprintf("env=%v", env),
+		"-var", fmt.Sprintf("networkID=%v", networkID),
+		templatesPath + "/database/postgresql/main.pkr.hcl",
 	}
-	return result
 }

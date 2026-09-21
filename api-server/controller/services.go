@@ -16,13 +16,13 @@ import (
 )
 
 func CreateService(g *gin.Context) {
-	rawParams, exists := g.Get("params")
+	serviceValue, exists := g.Get("params")
 	if !exists {
 		g.Status(http.StatusInternalServerError)
 		slog.Error("Required params missing from Gin context", "key", "params")
 		return
 	}
-	params, ok := rawParams.(data.CreateServiceParams)
+	service, ok := serviceValue.(data.Service)
 	if !ok {
 		g.Status(http.StatusInternalServerError)
 		slog.Error(
@@ -31,15 +31,21 @@ func CreateService(g *gin.Context) {
 		return
 	}
 
-	err := params.CreateRecord(context.Background())
+	err, recordID := service.CreateRecord(context.Background())
 	if err != nil {
 		g.Status(http.StatusInternalServerError)
 		slog.Error("Failed to create database record", "error", err)
 		return
 	}
+	serviceJSON, err := json.Marshal(service)
+	if err != nil {
+		slog.Error("Failed to serialize service", "error", err)
+		g.Status(http.StatusInternalServerError)
+		return
+	}
 
 	options := client.StartWorkflowOptions{
-		ID:        "create-Service-workflow" + strconv.Itoa(*params.RecordID),
+		ID:        "create-Service-workflow" + strconv.Itoa(*recordID),
 		TaskQueue: "task-queue",
 	}
 
@@ -50,8 +56,9 @@ func CreateService(g *gin.Context) {
 		slog.Error("Failed to Parse network id", "error", err)
 		return
 	}
+
 	workflowParams := temporal.CreateServiceWorkflowParams{
-		ServiceParams: params,
+		RawService:    serviceJSON,
 		Env:           os.Getenv("ENV"),
 		TemplatesPath: os.Getenv("PACKER_TEMPLATES_PATH"),
 		NetworkID:     networkID,
@@ -62,7 +69,7 @@ func CreateService(g *gin.Context) {
 		slog.Error("Failed to Execute workflow", "error", err)
 		return
 	}
-	g.JSON(http.StatusAccepted, params)
+	g.JSON(http.StatusAccepted, service)
 }
 
 func ListMangedServices(g *gin.Context) {

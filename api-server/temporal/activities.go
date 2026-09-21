@@ -2,24 +2,25 @@ package temporal
 
 import (
 	"context"
-	"fmt"
+	"encoding/json"
 	"net"
+	"os"
 	"os/exec"
 
 	"github.com/ahmedhesham301/hetzner-control-plane/api-server/data"
 	"github.com/ahmedhesham301/hetzner-control-plane/api-server/utils"
 
 	"github.com/ahmedhesham301/hetzner-control-plane/modules/hetzner"
-	"github.com/ahmedhesham301/hetzner-control-plane/modules/random"
 	"github.com/ahmedhesham301/hetzner-control-plane/modules/services"
 	"github.com/hetznercloud/hcloud-go/v2/hcloud"
 	"go.temporal.io/sdk/activity"
 )
 
-func checkImageExist(ctx context.Context, params data.CreateServiceParams) (*int64, error) {
+func checkImageExist(ctx context.Context, serviceJSON json.RawMessage) (*int64, error) {
+	service, _ := data.ParseService(serviceJSON)
 	images, err := hetzner.HClient.Image.AllWithOpts(ctx, hcloud.ImageListOpts{
 		LabelSelector: services.ConvertToHetznerLabels(
-			params.GetConfigMap(),
+			service.GetConfigMap(),
 		),
 	})
 
@@ -34,21 +35,23 @@ func checkImageExist(ctx context.Context, params data.CreateServiceParams) (*int
 }
 
 type buildImageParams struct {
-	ServiceParams data.CreateServiceParams
+	ServiceJSON   json.RawMessage
 	Env           string
 	TemplatesPath string
 	NetworkID     int64
 }
 
 func buildImage(ctx context.Context, params buildImageParams) (*int64, error) {
-	args := []string{
-		"build", "-machine-readable",
-		"-var", fmt.Sprintf("config=%v", utils.ConvertMapToJsonString(params.ServiceParams.GetConfigMap())),
-		"-var", fmt.Sprintf("env=%v", params.Env),
-		"-var", fmt.Sprintf("networkID=%v", params.NetworkID),
+	service, err := data.ParseService(params.ServiceJSON)
+	if err != nil {
+		return nil, err
 	}
-
-	args = append(args, params.TemplatesPath+"/"+params.ServiceParams.ServiceType+"/"+params.ServiceParams.Engine+"/main.pkr.hcl")
+	// Template files belong to the worker; retries may carry an outdated path.
+	templatesPath := os.Getenv("PACKER_TEMPLATES_PATH")
+	if templatesPath == "" {
+		templatesPath = params.TemplatesPath
+	}
+	args := service.GetPackerBuildArgs(templatesPath, params.Env, params.NetworkID)
 
 	logger := activity.GetLogger(ctx)
 	cmd := exec.CommandContext(ctx, "packer", args...)
@@ -64,7 +67,7 @@ func buildImage(ctx context.Context, params buildImageParams) (*int64, error) {
 }
 
 type deployServiceParams struct {
-	ServiceParams      data.CreateServiceParams
+	ServiceJSON        json.RawMessage
 	ImageID            int64
 	Env                string
 	AllowAllFirewallID *int64
@@ -72,52 +75,13 @@ type deployServiceParams struct {
 }
 
 func deployService(ctx context.Context, params deployServiceParams) error {
-	ops := hcloud.ServerCreateOpts{
-		Name:       random.AddRandomLetters(params.ServiceParams.Engine + "-" + params.ServiceParams.Version),
-		ServerType: &hcloud.ServerType{Name: params.ServiceParams.ServerType},
-		Image:      &hcloud.Image{ID: params.ImageID},
-		Location:   &hcloud.Location{Name: params.ServiceParams.Location},
-		PublicNet: &hcloud.ServerCreatePublicNet{
-			EnableIPv4: params.ServiceParams.Network.PublicIPv4,
-			EnableIPv6: params.ServiceParams.Network.PublicIPv6,
-		},
-		Labels: services.AppendManagedLabel(params.ServiceParams.GetConfigMapString()),
-	}
-	var firewalls []*hcloud.ServerCreateFirewall
-	if params.ServiceParams.FirewallIDs != nil {
-		for _, id := range *params.ServiceParams.FirewallIDs {
-			firewalls = append(firewalls, &hcloud.ServerCreateFirewall{
-				Firewall: hcloud.Firewall{
-					ID: id,
-				},
-			})
-		}
-	}
+	service, _ := data.ParseService(params.ServiceJSON)
 
-	if params.Env == "dev" {
-		ops.PublicNet.EnableIPv4 = true
-		ops.PublicNet.EnableIPv6 = true
-		firewalls = append(firewalls, &hcloud.ServerCreateFirewall{
-			Firewall: hcloud.Firewall{
-				ID: *params.AllowAllFirewallID,
-			},
-		})
-	}
-	ops.Firewalls = firewalls
-	if params.ServiceParams.Network.PrivateNetwork {
-		ops.Networks = []*hcloud.Network{
-			{
-
-				ID: params.NetworkID,
-			},
-		}
-	}
-	server, _, err := hetzner.HClient.Server.Create(ctx, ops)
-
+	err, server := service.Provision(ctx, params.ImageID, params.Env, params.AllowAllFirewallID, params.NetworkID)
 	if err != nil {
 		return err
 	}
-	return params.ServiceParams.SaveToDB(ctx, *server.Server)
+	return service.SaveToDB(ctx, *server)
 
 }
 
